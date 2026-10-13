@@ -1,6 +1,6 @@
 #!/bin/bash
 # stay-active - macOS synthetic activity utility (MIT)
-VERSION="1.1.0"
+VERSION="1.2.0"
 SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 STATE_DIR="${STAY_ACTIVE_STATE_DIR:-$HOME/.local}"
 PID_FILE="$STATE_DIR/.stay_active_pid"
@@ -9,6 +9,8 @@ LOG_FILE="$STATE_DIR/.stay_active_log"
 PLIST="$HOME/Library/LaunchAgents/net.zbo.stay-active.plist"
 MIN_IDLE="${STAY_ACTIVE_MIN_IDLE_SECONDS:-60}"
 MOUSE="${STAY_ACTIVE_MOUSE:-0}"
+DAILY_START_TIME_CENTRAL="${DAILY_START_TIME_CENTRAL:-08:00}"
+DAILY_STOP_TIME_CENTRAL="${DAILY_STOP_TIME_CENTRAL:-${DAILY_END_TIME_CENTRAL:-17:00}}"
 
 log_msg() {
     mkdir -p "$STATE_DIR"
@@ -18,6 +20,10 @@ log_msg() {
 valid_config() {
     [[ "$MIN_IDLE" =~ ^[0-9]+$ ]] || { echo 'STAY_ACTIVE_MIN_IDLE_SECONDS must be a nonnegative integer' >&2; return 1; }
     [[ "$MOUSE" = 0 || "$MOUSE" = 1 ]] || { echo 'STAY_ACTIVE_MOUSE must be 0 or 1' >&2; return 1; }
+    for time in "$DAILY_START_TIME_CENTRAL" "$DAILY_STOP_TIME_CENTRAL"; do
+        [[ "$time" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || { echo "Invalid Central schedule time: $time (expected HH:MM)" >&2; return 1; }
+    done
+    [[ "$DAILY_START_TIME_CENTRAL" < "$DAILY_STOP_TIME_CENTRAL" ]] || { echo "Schedule start must precede stop on the same day" >&2; return 1; }
 }
 
 # Only signal processes whose command line matches this specific executable in worker mode.
@@ -68,14 +74,27 @@ simulate_activity() {
     log_msg "Synthetic input sent (mouse=$MOUSE); application presence not verified"
 }
 
+central_hhmm() { TZ=America/Chicago date +%H:%M; }
+
 run_worker() {
-    local idle failures=0 interval i
+    local mode="${1:-normal}" idle failures=0 interval i now
     trap 'exit 0' INT TERM HUP
     trap cleanup EXIT
     check_dependencies || exit 1
     valid_config || exit 1
-    log_msg "Worker started (v$VERSION; min idle $MIN_IDLE sec; mouse=$MOUSE)"
+    log_msg "Worker started (v$VERSION; mode=$mode; min idle $MIN_IDLE sec; mouse=$MOUSE)"
     while :; do
+        if [[ "$mode" = scheduled ]]; then
+            now=$(central_hhmm) || { log_msg 'ERROR: cannot read Central time'; exit 1; }
+            if [[ "$now" > "$DAILY_STOP_TIME_CENTRAL" || "$now" = "$DAILY_STOP_TIME_CENTRAL" ]]; then
+                log_msg "Scheduled stop at $now Central; terminating until manually started"
+                exit 0
+            fi
+            if [[ "$now" < "$DAILY_START_TIME_CENTRAL" ]]; then
+                sleep 1
+                continue
+            fi
+        fi
         idle=$(read_idle_seconds) || { log_msg 'ERROR: unable to inspect system idle time; exiting'; exit 1; }
         if ((idle >= MIN_IDLE)); then
             if simulate_activity; then
@@ -89,12 +108,29 @@ run_worker() {
             log_msg "Skipped input: recent system activity ($idle sec idle)"
         fi
         interval=$((30 + RANDOM % 31))
-        for ((i=0; i<interval; i++)); do sleep 1; done
+        for ((i=0; i<interval; i++)); do
+            if [[ "$mode" = scheduled ]]; then
+                now=$(central_hhmm) || exit 1
+                if [[ "$now" > "$DAILY_STOP_TIME_CENTRAL" || "$now" = "$DAILY_STOP_TIME_CENTRAL" ]]; then
+                    log_msg "Scheduled end reached at $now Central; exiting"
+                    exit 0
+                fi
+            fi
+            sleep 1
+        done
     done
 }
 
 start_worker() {
-    local pid
+    local mode="${1:-normal}" pid now
+    if [[ "$mode" = scheduled ]]; then
+        valid_config || return 1
+        now=$(central_hhmm) || return 1
+        if [[ "$now" > "$DAILY_STOP_TIME_CENTRAL" || "$now" = "$DAILY_STOP_TIME_CENTRAL" ]]; then
+            echo "Central daily stop time has passed; nothing started"
+            return 0
+        fi
+    fi
     check_dependencies || return 1
     valid_config || return 1
     mkdir -p "$STATE_DIR"
@@ -103,7 +139,11 @@ start_worker() {
         echo "Unverified or stale lock at $LOCK_DIR; inspect before manually removing lock and PID file" >&2
         return 1
     fi
-    nohup /bin/bash "$SELF" __run </dev/null >> "$LOG_FILE" 2>&1 &
+    if [[ "$mode" = scheduled ]]; then
+        nohup env DAILY_START_TIME_CENTRAL="$DAILY_START_TIME_CENTRAL" DAILY_STOP_TIME_CENTRAL="$DAILY_STOP_TIME_CENTRAL" /bin/bash "$SELF" __run-scheduled </dev/null >> "$LOG_FILE" 2>&1 &
+    else
+        nohup /bin/bash "$SELF" __run </dev/null >> "$LOG_FILE" 2>&1 &
+    fi
     pid=$!
     printf '%s\n' "$pid" > "$PID_FILE"
     echo "Started (PID $pid)"
@@ -150,6 +190,7 @@ remove_agent() {
 
 case "${1:-}" in
     start) start_worker ;;
+    schedule-start) start_worker scheduled ;;
     stop) stop_worker ;;
     toggle) if worker_alive; then stop_worker; else start_worker; fi ;;
     status) status_worker ;;
@@ -157,12 +198,14 @@ case "${1:-}" in
     autostart-on) install_agent ;;
     autostart-off) remove_agent ;;
     __run) run_worker ;;
+    __run-scheduled) run_worker scheduled ;;
     -v|--version) echo "stay-active v$VERSION" ;;
     -h|--help|help|"")
         cat <<HELP
 stay-active v$VERSION (macOS)
-Commands: start, stop, toggle, status, log, autostart-on, autostart-off
+Commands: start, schedule-start, stop, toggle, status, log, autostart-on, autostart-off
 Settings: STAY_ACTIVE_MIN_IDLE_SECONDS=60; STAY_ACTIVE_MOUSE=0 (0 disables cursor movement)
+Central schedule: DAILY_START_TIME_CENTRAL=08:00 DAILY_STOP_TIME_CENTRAL=17:00
 Synthetic input may not change application presence; verify independently.
 HELP
         ;;

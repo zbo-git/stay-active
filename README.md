@@ -202,3 +202,19 @@ The worker operates locally and does not include telemetry or a network service.
 ## Contributing and license
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Distributed under the [MIT License](LICENSE). Original project by [Sleekhost](https://github.com/sleekhost).
+
+## Manual daily schedule (Central Time)
+
+Use `stay-active schedule-start` to manually start a **one-day session**. The default window is 8:00 AM–5:00 PM in `America/Chicago` (automatically CST/CDT). If started before 8:00 AM, the manually launched worker waits until the window opens. If started after 5:00 PM, nothing starts. At 5:00 PM, the worker **exits and cleans up its PID and lock files**; it does not remain alive overnight or restart the next day.
+
+```bash
+DAILY_START_TIME_CENTRAL=08:00 DAILY_STOP_TIME_CENTRAL=17:00 stay-active schedule-start
+stay-active status
+stay-active stop
+```
+
+The legacy `DAILY_END_TIME_CENTRAL` variable is supported as an alias if `DAILY_STOP_TIME_CENTRAL` is unset. Times must be in 24-hour HH:MM format, with start strictly before stop (same-day only). `stay-active start` is unchanged and runs without a schedule until explicitly stopped.
+
+No automatic startup is enabled by `schedule-start`. The existing optional `autostart-on` command remains a separate opt-in capability; do not enable it if you want every session to require manual invocation.
+
+Schedule checks are performed once per second during idle periods, and after each synthetic input cycle, so the process terminates at the configured stop minute rather than sleeping into the evening. Mac sleep can delay execution until the system wakes.
