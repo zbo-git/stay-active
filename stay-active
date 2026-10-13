@@ -1,252 +1,170 @@
 #!/bin/bash
-#
-# stay-active - Keep Microsoft Teams (and other apps) showing you as "Active"
-# Author: Sleekhost
-# License: MIT
-# Repository: https://github.com/sleekhost/stay-active
-#
-VERSION="1.0.0"
-
-CONTROL_FILE="$HOME/.local/.stay_active_on"
-PID_FILE="$HOME/.local/.stay_active_pid"
-LOG_FILE="$HOME/.local/.stay_active_log"
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-show_help() {
-    cat << EOF
-stay-active v${VERSION}
-Keep Microsoft Teams (and other apps) showing you as "Active" on macOS
-
-USAGE:
-    stay-active <command>
-
-COMMANDS:
-    start       Start the activity daemon
-    stop        Stop the activity daemon
-    toggle      Toggle the daemon on/off
-    status      Check if daemon is running
-    log         View recent activity log
-
-OPTIONS:
-    -h, --help      Show this help message
-    -v, --version   Show version number
-
-EXAMPLES:
-    stay-active start     # Start keeping you active
-    stay-active stop      # Stop the daemon
-    stay-active toggle    # Quick toggle on/off
-    stay-active log       # See what it's been doing
-
-HOW IT WORKS:
-    Simulates natural mouse movement and keyboard activity at random
-    intervals (30-60 seconds) to prevent apps from marking you as "Away".
-    Uses human-like patterns to avoid detection.
-
-REQUIREMENTS:
-    - macOS 10.13+
-    - cliclick (install via: brew install cliclick)
-    - Accessibility permissions for Terminal
-
-AUTHOR:
-    Sleekhost
-    https://github.com/sleekhost/stay-active
-
-EOF
-}
-
-show_version() {
-    echo "stay-active v${VERSION}"
-}
+# stay-active - macOS synthetic activity utility (MIT)
+VERSION="1.1.0"
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+STATE_DIR="${STAY_ACTIVE_STATE_DIR:-$HOME/.local}"
+PID_FILE="$STATE_DIR/.stay_active_pid"
+LOCK_DIR="$STATE_DIR/.stay_active_lock"
+LOG_FILE="$STATE_DIR/.stay_active_log"
+PLIST="$HOME/Library/LaunchAgents/net.zbo.stay-active.plist"
+MIN_IDLE="${STAY_ACTIVE_MIN_IDLE_SECONDS:-60}"
+MOUSE="${STAY_ACTIVE_MOUSE:-0}"
 
 log_msg() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+    mkdir -p "$STATE_DIR"
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE"
 }
 
-get_random_interval() {
-    echo $((30 + RANDOM % 31))
+valid_config() {
+    [[ "$MIN_IDLE" =~ ^[0-9]+$ ]] || { echo 'STAY_ACTIVE_MIN_IDLE_SECONDS must be a nonnegative integer' >&2; return 1; }
+    [[ "$MOUSE" = 0 || "$MOUSE" = 1 ]] || { echo 'STAY_ACTIVE_MOUSE must be 0 or 1' >&2; return 1; }
 }
 
-get_random_offset() {
-    echo $((RANDOM % 11 - 5))
+# Only signal processes whose command line matches this specific executable in worker mode.
+# Refuse uncertain ownership rather than risk killing an unrelated process.
+worker_alive() {
+    local pid command_line
+    [[ -f "$PID_FILE" ]] || return 1
+    pid=$(cat "$PID_FILE" 2>/dev/null) || return 1
+    [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 1)) || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    command_line=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
+    [[ "$command_line" == *"$SELF"* && "$command_line" == *"__run"* ]]
 }
 
-check_cliclick() {
-    if ! command -v cliclick &> /dev/null; then
-        echo -e "${RED}Error: cliclick not found${NC}"
-        echo ""
-        echo "Install it with:"
-        echo "  brew install cliclick"
-        echo ""
-        echo "Then grant Accessibility permissions in:"
-        echo "  System Settings → Privacy & Security → Accessibility"
-        exit 1
+cleanup() {
+    local current
+    current=$(cat "$PID_FILE" 2>/dev/null) || return 0
+    if [[ "$current" = "$$" ]]; then
+        rm -f "$PID_FILE"
+        rmdir "$LOCK_DIR" 2>/dev/null || true
     fi
+}
+
+check_dependencies() {
+    command -v cliclick >/dev/null 2>&1 || { echo 'Missing cliclick; install with brew install cliclick' >&2; return 1; }
+    command -v ioreg >/dev/null 2>&1 || { echo 'ioreg not found: this utility requires macOS' >&2; return 1; }
+}
+
+read_idle_seconds() {
+    local nanos
+    nanos=$(ioreg -c IOHIDSystem 2>/dev/null | awk -F'= ' '/"HIDIdleTime"/ {print $2; exit}')
+    [[ "$nanos" =~ ^[0-9]+$ ]] || return 1
+    echo $((nanos / 1000000000))
 }
 
 simulate_activity() {
-    log_msg "Daemon started (v${VERSION})"
+    local position x y
+    if [[ "$MOUSE" = 1 ]]; then
+        position=$(cliclick p 2>/dev/null) || return 1
+        [[ "$position" =~ ^[0-9]+,[0-9]+$ ]] || return 1
+        x=${position%,*}; y=${position#*,}
+        x=$((x + RANDOM % 11 - 5)); y=$((y + RANDOM % 11 - 5))
+        ((x >= 0)) || x=0
+        ((y >= 0)) || y=0
+        cliclick -e 30 "m:$x,$y" >/dev/null 2>&1 || return 1
+    fi
+    cliclick kd:shift ku:shift >/dev/null 2>&1 || return 1
+    log_msg "Synthetic input sent (mouse=$MOUSE); application presence not verified"
+}
 
-    while [ -f "$CONTROL_FILE" ]; do
-        current_pos=$(cliclick p 2>/dev/null | grep -oE '[0-9]+,[0-9]+')
-
-        if [ -n "$current_pos" ]; then
-            current_x=$(echo "$current_pos" | cut -d',' -f1)
-            current_y=$(echo "$current_pos" | cut -d',' -f2)
-
-            offset_x=$(get_random_offset)
-            offset_y=$(get_random_offset)
-
-            new_x=$((current_x + offset_x))
-            new_y=$((current_y + offset_y))
-
-            [ $new_x -lt 10 ] && new_x=10
-            [ $new_y -lt 10 ] && new_y=10
-
-            # Move mouse with easing (natural movement)
-            cliclick -e 30 m:$new_x,$new_y 2>/dev/null
-
-            sleep 0.$((RANDOM % 3 + 1))
-
-            # Press and release shift key (registers as activity)
-            cliclick kd:shift ku:shift 2>/dev/null
-
-            log_msg "Activity: mouse ($current_x,$current_y)->($new_x,$new_y) + shift key"
-
-            # 60% chance to move back (natural behavior)
-            if [ $((RANDOM % 10)) -lt 6 ]; then
-                sleep 0.$((RANDOM % 5 + 1))
-                cliclick -e 30 m:$current_x,$current_y 2>/dev/null
+run_worker() {
+    local idle failures=0 interval i
+    trap 'exit 0' INT TERM HUP
+    trap cleanup EXIT
+    check_dependencies || exit 1
+    valid_config || exit 1
+    log_msg "Worker started (v$VERSION; min idle $MIN_IDLE sec; mouse=$MOUSE)"
+    while :; do
+        idle=$(read_idle_seconds) || { log_msg 'ERROR: unable to inspect system idle time; exiting'; exit 1; }
+        if ((idle >= MIN_IDLE)); then
+            if simulate_activity; then
+                failures=0
+            else
+                failures=$((failures + 1))
+                log_msg "ERROR: cliclick failed ($failures/3); check Accessibility permissions"
+                if ((failures >= 3)); then exit 1; fi
             fi
         else
-            log_msg "Warning: Could not get mouse position"
+            log_msg "Skipped input: recent system activity ($idle sec idle)"
         fi
-
-        interval=$(get_random_interval)
-
-        # 15% chance of shorter burst (more active period)
-        if [ $((RANDOM % 100)) -lt 15 ]; then
-            interval=$((15 + RANDOM % 15))
-        fi
-
-        log_msg "Sleeping ${interval}s"
-
-        for ((i=0; i<interval; i++)); do
-            [ ! -f "$CONTROL_FILE" ] && break
-            sleep 1
-        done
+        interval=$((30 + RANDOM % 31))
+        for ((i=0; i<interval; i++)); do sleep 1; done
     done
-
-    log_msg "Daemon stopped"
 }
 
-start_daemon() {
-    check_cliclick
-
-    if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
-        echo -e "${YELLOW}Already running${NC}"
+start_worker() {
+    local pid
+    check_dependencies || return 1
+    valid_config || return 1
+    mkdir -p "$STATE_DIR"
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+        if worker_alive; then echo "Already running (PID $(cat "$PID_FILE"))"; return 0; fi
+        echo "Unverified or stale lock at $LOCK_DIR; inspect before manually removing lock and PID file" >&2
         return 1
     fi
-
-    # Ensure directory exists
-    mkdir -p "$HOME/.local"
-
-    # Keep last 100 log lines
-    if [ -f "$LOG_FILE" ]; then
-        tail -100 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
-    fi
-
-    touch "$CONTROL_FILE"
-    simulate_activity &
-    echo $! > "$PID_FILE"
-    echo -e "${GREEN}Started${NC} (PID: $(cat $PID_FILE))"
+    nohup /bin/bash "$SELF" __run </dev/null >> "$LOG_FILE" 2>&1 &
+    pid=$!
+    printf '%s\n' "$pid" > "$PID_FILE"
+    echo "Started (PID $pid)"
 }
 
-stop_daemon() {
-    rm -f "$CONTROL_FILE"
-
-    if [ -f "$PID_FILE" ]; then
-        pid=$(cat "$PID_FILE")
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null
-            log_msg "Stopped by user"
-            echo -e "${RED}Stopped${NC}"
-        else
-            echo -e "${YELLOW}Not running${NC}"
-        fi
-        rm -f "$PID_FILE"
-    else
-        echo -e "${YELLOW}Not running${NC}"
-    fi
+stop_worker() {
+    local pid
+    if ! worker_alive; then echo 'Not running; no process was signaled' >&2; return 1; fi
+    pid=$(cat "$PID_FILE")
+    kill "$pid" && echo "Stop requested (PID $pid)"
 }
 
-toggle_daemon() {
-    if [ -f "$CONTROL_FILE" ]; then
-        stop_daemon
-    else
-        start_daemon
-    fi
+status_worker() {
+    if worker_alive; then echo "Running (PID $(cat "$PID_FILE"))"; return 0; fi
+    if [[ -d "$LOCK_DIR" ]]; then echo 'Stopped (stale or unverified lock)'; else echo 'Stopped'; fi
+    return 1
 }
 
-status_daemon() {
-    if [ -f "$CONTROL_FILE" ] && [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") 2>/dev/null; then
-        echo -e "${GREEN}Running${NC} (PID: $(cat $PID_FILE))"
-        return 0
-    else
-        echo -e "${RED}Stopped${NC}"
-        return 1
-    fi
+install_agent() {
+    # LaunchAgent points to the installed script; avoids depending on the shell PATH.
+    local installed="$HOME/.local/bin/stay-active"
+    [[ -f "$installed" ]] || { echo "Install $installed first" >&2; return 1; }
+    case "$installed" in *'&'*|*'<'*|*'>'*|*'"'*) echo 'Unsupported character in home path' >&2; return 1;; esac
+    mkdir -p "$(dirname "$PLIST")"
+    cat > "$PLIST" <<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>net.zbo.stay-active</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string><string>$installed</string><string>start</string></array>
+<key>RunAtLoad</key><true/>
+<key>StartInterval</key><integer>60</integer>
+</dict></plist>
+XML
+    launchctl unload "$PLIST" >/dev/null 2>&1 || true
+    launchctl load "$PLIST"
 }
 
-show_log() {
-    if [ -f "$LOG_FILE" ]; then
-        echo -e "${YELLOW}Recent activity:${NC}"
-        echo ""
-        tail -20 "$LOG_FILE"
-    else
-        echo "No activity log yet. Start the daemon first."
-    fi
+remove_agent() {
+    launchctl unload "$PLIST" >/dev/null 2>&1 || true
+    rm -f "$PLIST"
+    echo 'Login LaunchAgent removed'
 }
 
-# Parse arguments
 case "${1:-}" in
-    start)
-        start_daemon
+    start) start_worker ;;
+    stop) stop_worker ;;
+    toggle) if worker_alive; then stop_worker; else start_worker; fi ;;
+    status) status_worker ;;
+    log) if [[ -f "$LOG_FILE" ]]; then tail -20 "$LOG_FILE"; else echo 'No activity log yet'; fi ;;
+    autostart-on) install_agent ;;
+    autostart-off) remove_agent ;;
+    __run) run_worker ;;
+    -v|--version) echo "stay-active v$VERSION" ;;
+    -h|--help|help|"")
+        cat <<HELP
+stay-active v$VERSION (macOS)
+Commands: start, stop, toggle, status, log, autostart-on, autostart-off
+Settings: STAY_ACTIVE_MIN_IDLE_SECONDS=60; STAY_ACTIVE_MOUSE=0 (0 disables cursor movement)
+Synthetic input may not change application presence; verify independently.
+HELP
         ;;
-    stop)
-        stop_daemon
-        ;;
-    toggle)
-        toggle_daemon
-        ;;
-    status)
-        status_daemon
-        ;;
-    log)
-        show_log
-        ;;
-    -h|--help|help)
-        show_help
-        ;;
-    -v|--version|version)
-        show_version
-        ;;
-    "")
-        echo "stay-active v${VERSION}"
-        echo ""
-        echo "Usage: stay-active <command>"
-        echo ""
-        echo "Commands: start, stop, toggle, status, log"
-        echo ""
-        echo "Run 'stay-active --help' for more information."
-        ;;
-    *)
-        echo -e "${RED}Unknown command: $1${NC}"
-        echo "Run 'stay-active --help' for usage information."
-        exit 1
-        ;;
+    *) echo "Unknown command: $1" >&2; exit 2 ;;
 esac
