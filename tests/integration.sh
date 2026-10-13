@@ -154,7 +154,15 @@ else
 fi
 [[ "$(cat "$STAY_ACTIVE_STATE_DIR/.stay_active_pid")" = "$original_pid" ]] || fail 'repeated start replaced PID'
 pass=$((pass+1))
-expect_fail bash "$APP" toggle
+# toggle may stop an in-flight mock process or attempt a new start after it exits.
+# Either way it must preserve the existing PID/lock while they are unverified.
+if bash "$APP" toggle >"$TMP/out" 2>"$TMP/err"; then
+  assert_has 'Stop requested\|Already running' "$TMP/out"
+else
+  assert_has 'Unverified or stale lock\|Not running' "$TMP/err"
+fi
+[[ "$(cat "$STAY_ACTIVE_STATE_DIR/.stay_active_pid")" = "$original_pid" ]] || fail 'toggle replaced unverified PID'
+pass=$((pass+1))
 reset_state
 expect_ok bash "$APP" toggle
 assert_has 'Started (PID' "$TMP/out"
