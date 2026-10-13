@@ -158,7 +158,7 @@ cp "$APP" "$HOME/.local/bin/stay-active"
 expect_ok bash "$APP" autostart-on
 [[ -f "$HOME/Library/LaunchAgents/net.zbo.stay-active.plist" ]] || fail 'LaunchAgent was not installed'
 pass=$((pass+1))
-assert_has 'launch' "$HOME/launchctl.calls"
+assert_has 'load' "$HOME/launchctl.calls"
 expect_ok bash "$APP" autostart-off
 assert_missing "$HOME/Library/LaunchAgents/net.zbo.stay-active.plist"
 
