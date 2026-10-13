@@ -12,7 +12,7 @@ REAL_DATE="$(command -v date)"
 cat >"$TMP/bin/date" <<'EOF'
 #!/bin/bash
 if [[ "$1" = '+%H:%M' ]]; then
-  if [[ -f "$CLOCK_FILE" ]]; then head -n 1 "$CLOCK_FILE"; sed '1d' "$CLOCK_FILE" > "$CLOCK_FILE.next"; mv "$CLOCK_FILE.next" "$CLOCK_FILE"; else echo 09:00; fi
+  if [[ -s "$CLOCK_FILE" ]]; then head -n 1 "$CLOCK_FILE"; sed '1d' "$CLOCK_FILE" > "$CLOCK_FILE.next"; mv "$CLOCK_FILE.next" "$CLOCK_FILE"; else echo 09:00; fi
 else
   /bin/date "$@"
 fi
@@ -29,6 +29,16 @@ if [[ "$1" = p ]]; then echo '250,250'; fi
 EOF
 cat >"$TMP/bin/sleep" <<'EOF'
 #!/bin/bash
+exit 0
+EOF
+cat > "$TMP/bin/nohup" <<'EOF'
+#!/bin/bash
+# Prevent launching persistent background workers in the test runner.
+exit 0
+EOF
+cat > "$TMP/bin/launchctl" <<'EOF'
+#!/bin/bash
+echo "$*" >> "$HOME/launchctl.calls"
 exit 0
 EOF
 chmod +x "$TMP/bin/"*
@@ -127,5 +137,29 @@ clock 09:00 09:01
 expect_ok env STAY_ACTIVE_MOUSE=1 DAILY_STOP_TIME_CENTRAL=09:01 bash "$APP" __run-scheduled
 assert_has '^p$' "$CLICK_LOG"
 assert_has 'm:' "$CLICK_LOG"
+
+# Command-level start/toggle and stale-lock safety without spawning a live daemon.
+reset_state
+expect_ok bash "$APP" start
+assert_has 'Started (PID' "$TMP/out"
+[[ -f "$STAY_ACTIVE_STATE_DIR/.stay_active_pid" ]] || fail 'start did not write PID'
+pass=$((pass+1))
+expect_fail bash "$APP" start
+assert_has 'Unverified or stale lock' "$TMP/err"
+expect_fail bash "$APP" toggle
+reset_state
+expect_ok bash "$APP" toggle
+assert_has 'Started (PID' "$TMP/out"
+reset_state
+
+# Optional LaunchAgent operations are mocked and confined to temporary HOME.
+mkdir -p "$HOME/.local/bin"
+cp "$APP" "$HOME/.local/bin/stay-active"
+expect_ok bash "$APP" autostart-on
+[[ -f "$HOME/Library/LaunchAgents/net.zbo.stay-active.plist" ]] || fail 'LaunchAgent was not installed'
+pass=$((pass+1))
+assert_has 'launch' "$HOME/launchctl.calls"
+expect_ok bash "$APP" autostart-off
+assert_missing "$HOME/Library/LaunchAgents/net.zbo.stay-active.plist"
 
 echo "PASS: $pass assertions (mocked macOS services; no real input generated)"
