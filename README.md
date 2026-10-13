@@ -1,225 +1,220 @@
-<p align="center">
-  <h1 align="center">stay-active</h1>
-  <p align="center">
-    <strong>Keep Microsoft Teams (and other apps) showing you as "Active" on macOS</strong>
-  </p>
-  <p align="center">
-    <a href="https://www.apple.com/macos"><img src="https://img.shields.io/badge/macOS-10.13+-blue.svg?style=for-the-badge&logo=apple" alt="macOS"></a>
-    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge" alt="License"></a>
-    <a href="https://www.gnu.org/software/bash/"><img src="https://img.shields.io/badge/Shell-Bash-4EAA25.svg?style=for-the-badge&logo=gnu-bash&logoColor=white" alt="Bash"></a>
-  </p>
-</p>
+# stay-active
 
-<p align="center">
-  <img src="assets/demo.gif" alt="stay-active demo" width="600">
-</p>
+A lightweight macOS Bash utility that periodically generates synthetic keyboard input, and optionally small cursor movements. This fork of [sleekhost/stay-active](https://github.com/sleekhost/stay-active) focuses on safer process management, clearer logging, and less interference with normal work.
 
-<p align="center">
-  <em>No more getting marked as "Away" during bathroom breaks, coffee runs, or deep work sessions.</em>
-</p>
+> **Important:** Synthetic input does not guarantee that Microsoft Teams or any other application will show you as **Active**. Presence may also depend on application state, screen lock, sleep, and organizational policies. This project makes no claim that its input is indistinguishable from human activity or undetectable.
 
----
+## Features
 
-## The Problem
+| Feature | Behavior |
+| --- | --- |
+| Lightweight utility | Bash script using `cliclick` on macOS |
+| Synthetic keyboard input | Sends a Shift press/release when the system meets the configured idle threshold |
+| Optional cursor movement | Small randomized offset, **disabled by default** |
+| Randomized intervals | Checks roughly every 30–60 seconds |
+| Idle awareness | Skips input when the macOS HID idle time is below the threshold (60 seconds by default) |
+| Process safety | Atomic startup lock and process-command checks before termination |
+| Logging | Records skipped input, simulated input, and operational errors |
+| Optional login startup | User-level macOS LaunchAgent with periodic retry |
 
-Microsoft Teams marks you as **"Away" after just 5 minutes** of inactivity. There's no built-in setting to change this.
+## Requirements
 
-This creates problems:
-- Makes you look unproductive during legitimate breaks
-- Triggers unnecessary check-ins from managers
-- Creates false impressions about your availability
-- Penalizes deep work (reading docs, thinking, planning)
+- macOS, with Bash and `ioreg` available
+- [Homebrew](https://brew.sh/) (for the included installer)
+- [`cliclick`](https://github.com/BlueM/cliclick), installed via Homebrew
+- Accessibility permission for the terminal and/or relevant `cliclick` executable
 
-## The Solution
+The original project documented macOS 10.13+; this fork has **not** been compatibility-tested across macOS releases.
 
-`stay-active` simulates natural human activity at random intervals:
+## Installation
 
-| Feature | Description |
-|---------|-------------|
-| **Mouse Movement** | Tiny, random movements (1-5 pixels) |
-| **Keyboard Activity** | Shift key press (invisible, non-disruptive) |
-| **Human-like Patterns** | Random intervals (30-60 sec), not predictable |
-| **Lightweight** | Pure shell script, ~6KB, no heavy dependencies |
-| **Logging** | Built-in activity log to verify it's working |
+### Recommended: install from your checked-out fork
 
----
-
-## Quick Install
+On a Mac:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sleekhost/stay-active/main/install.sh | bash
+git clone https://github.com/zbo-git/stay-active.git
+cd stay-active
+bash install.sh
 ```
 
-That's it! The installer handles everything: Homebrew, cliclick, PATH setup.
+If reviewing an unmerged PR, switch to its branch **before** running `bash install.sh`. The installer copies the local `stay-active` script from the checkout to `~/.local/bin/stay-active`.
 
-<details>
-<summary><strong>Manual Installation</strong></summary>
+The installer requires Homebrew, installs `cliclick` if missing, and adds `~/.local/bin` to your shell PATH configuration if necessary. Open a new terminal, or run:
 
-### 1. Install cliclick
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+### Manual installation
 
 ```bash
 brew install cliclick
-```
-
-### 2. Download stay-active
-
-```bash
 mkdir -p ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/sleekhost/stay-active/main/stay-active -o ~/.local/bin/stay-active
+cp ./stay-active ~/.local/bin/stay-active
 chmod +x ~/.local/bin/stay-active
 ```
 
-### 3. Add to PATH
+Add `~/.local/bin` to your PATH if it is not already included.
 
-```bash
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-source ~/.zshrc
-```
+### Grant Accessibility permissions
 
-### 4. Grant Accessibility Permissions
-
-1. Open **System Settings** → **Privacy & Security** → **Accessibility**
-2. Click **+** and add **Terminal** (or your terminal app)
-3. Also add `/opt/homebrew/bin/cliclick`
-
-</details>
-
----
+In **System Settings → Privacy & Security → Accessibility**, allow your terminal application and `cliclick` as needed. The executable may be in `/opt/homebrew/bin/cliclick` on Apple Silicon or `/usr/local/bin/cliclick` on Intel Macs. Exact permission behavior depends on your macOS version and how the utility is started.
 
 ## Usage
 
 ```bash
-stay-active start     # Start keeping you active
-stay-active stop      # Stop the daemon
-stay-active toggle    # Toggle on/off
-stay-active status    # Check if running
-stay-active log       # View activity log
-stay-active --help    # Show all commands
+stay-active start         # Start detached background worker
+stay-active status        # Check whether its process can be verified
+stay-active log           # View recent log entries
+stay-active stop          # Request a graceful stop
+stay-active toggle        # Start or stop
+stay-active autostart-on  # Install and load the login LaunchAgent
+stay-active autostart-off # Unload and remove the LaunchAgent
+stay-active --help        # Show command summary
+stay-active --version     # Show version
 ```
 
-### Example
+`start` runs the worker independently of the invoking terminal using `nohup`. `status` reports the worker's verified process state; it does **not** report Microsoft Teams presence.
+
+### Configuration
+
+Set environment variables **when starting** the script:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `STAY_ACTIVE_MIN_IDLE_SECONDS` | `60` | Minimum observed macOS HID idle time before synthetic input is sent; nonnegative integer |
+| `STAY_ACTIVE_MOUSE` | `0` | `0`: keyboard only; `1`: additionally move cursor by a small offset |
+| `STAY_ACTIVE_STATE_DIR` | `~/.local` | Directory for worker lock, PID and log files (advanced use) |
+
+For example:
 
 ```bash
-$ stay-active start
-Started (PID: 12345)
-
-$ stay-active status
-Running (PID: 12345)
-
-$ stay-active log
-[2025-01-15 09:30:45] Daemon started (v1.0.0)
-[2025-01-15 09:30:45] Activity: mouse (500,400)->(503,398) + shift key
-[2025-01-15 09:30:45] Sleeping 42s
-...
+STAY_ACTIVE_MIN_IDLE_SECONDS=120 STAY_ACTIVE_MOUSE=0 stay-active start
 ```
 
----
+The optional LaunchAgent starts with the default settings unless you explicitly configure its environment. Configuration values are not dynamically reloaded into an already-running worker.
 
-## How It Works
+## How it works
 
+1. The worker reads the macOS HID idle-time counter using `ioreg`.
+2. If the recorded idle duration is below the configured threshold, it skips synthetic input.
+3. Otherwise, it sends a Shift key press/release through `cliclick`. When explicitly enabled, it also makes a small cursor movement.
+4. It records the result and sleeps for approximately 30–60 seconds before checking again.
+5. If idle-time inspection fails, the worker stops. Three consecutive failures to send input also cause it to exit.
+
+HID idle time is an operating-system approximation. Synthetic events can affect idle-time reporting, and successful `cliclick` execution does not demonstrate a change to application presence.
+
+## Optional automatic startup
+
+```bash
+stay-active autostart-on
 ```
-Every 30-60 seconds (randomized):
-  1. Move mouse 1-5 pixels in random direction
-  2. Press + release Shift key
-  3. 60% chance: move mouse back to original position
-  4. 15% of cycles: use shorter 15-30 sec intervals
+
+This installs a user LaunchAgent at `~/Library/LaunchAgents/net.zbo.stay-active.plist`. It starts on login and periodically attempts to run `stay-active start` (approximately once per minute). This is a **retry mechanism**, not full process supervision.
+
+**For an intentional stop, disable automatic startup first:**
+
+```bash
+stay-active autostart-off
+stay-active stop
 ```
 
-This mimics natural human behavior — no predictable patterns that could be flagged.
-
----
-
-## Requirements
-
-| Requirement | Details |
-|-------------|---------|
-| **macOS** | 10.13 (High Sierra) or newer |
-| **Homebrew** | Package manager ([brew.sh](https://brew.sh)) |
-| **cliclick** | Mouse/keyboard automation (auto-installed) |
-| **Permissions** | Accessibility access for Terminal |
-
----
+Otherwise the LaunchAgent may start a worker again. An unexpected worker crash may leave a stale lock requiring manual recovery rather than automatic restart.
 
 ## Troubleshooting
 
-<details>
-<summary><strong>"cliclick not found"</strong></summary>
+### `cliclick` not found
 
 ```bash
 brew install cliclick
 ```
-</details>
 
-<details>
-<summary><strong>"Accessibility privileges not enabled"</strong></summary>
+Make sure Homebrew's `bin` directory is on PATH.
 
-1. Open **System Settings** → **Privacy & Security** → **Accessibility**
-2. Add your terminal app (Terminal, iTerm, etc.)
-3. Add `/opt/homebrew/bin/cliclick`
-</details>
+### Accessibility errors or synthetic input not working
 
-<details>
-<summary><strong>Teams still shows "Away"</strong></summary>
+Review permissions in **System Settings → Privacy & Security → Accessibility**. Run `stay-active log` to see reported failures. The worker exits after three consecutive failed `cliclick` operations rather than silently claiming successful activity.
 
-1. Check the log: `stay-active log`
-2. Verify it's running: `stay-active status`
-3. Restart: `stay-active stop && stay-active start`
-4. Make sure Accessibility permissions are granted
-</details>
+### A stale lock prevents startup
 
----
+State is stored by default at:
+
+```text
+~/.local/.stay_active_pid
+~/.local/.stay_active_lock/
+~/.local/.stay_active_log
+```
+
+The worker deliberately refuses to remove an ambiguous lock or signal a PID it cannot verify. First inspect `stay-active status`, the PID file, and running processes. **Only after confirming no matching worker is running**, you can clear stale state:
+
+```bash
+rm -f ~/.local/.stay_active_pid
+rmdir ~/.local/.stay_active_lock
+stay-active start
+```
+
+Do not remove an active worker's lock. `rmdir` intentionally fails if the directory is not empty.
+
+### Teams still shows Away
+
+Check `stay-active status` and `stay-active log`, and verify the Mac is awake and Accessibility permission is granted. Teams can use signals beyond synthetic input. There is no supported guarantee that this utility changes its presence state.
+
+### After sleep, login, or terminal close
+
+Verify the worker with `stay-active status`. Test the optional LaunchAgent separately. Screen lock, sleep/wake and login behavior have not been validated for all environments.
+
+## Development and testing
+
+From the repository root:
+
+```bash
+bash -n stay-active install.sh uninstall.sh
+bash tests/smoke.sh
+```
+
+These checks validate basic Bash syntax and selected process-safety behavior; they do **not** exercise macOS input injection or Teams integration.
+
+Manual macOS QA is still needed for Accessibility denial or revocation, concurrent starts, repeated start/stop, stale-lock recovery, terminal closure, login startup, screen lock, sleep/wake, and application presence.
 
 ## Uninstall
 
+From a checkout:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sleekhost/stay-active/main/uninstall.sh | bash
+bash uninstall.sh
 ```
 
-<details>
-<summary><strong>Manual uninstall</strong></summary>
+Or manually:
 
 ```bash
+stay-active autostart-off
 stay-active stop
-rm ~/.local/bin/stay-active
-rm ~/.local/.stay_active_*
-brew uninstall cliclick  # optional
+rm -f ~/.local/bin/stay-active
 ```
-</details>
 
----
+Inspect state files before removing them manually if a worker may still be running. `cliclick` can optionally be removed using `brew uninstall cliclick` if no other programs need it.
 
-## Privacy & Security
+## Privacy and security
 
-- **100% Local** — No data sent anywhere, no analytics
-- **Offline** — Works without internet
-- **Open Source** — Review every line of code
-- **Minimal** — Only needs Accessibility permission
+The worker operates locally and does not include telemetry or a network service. It requires macOS Accessibility permissions to generate synthetic input. Review your organization's policies before using tools that alter apparent activity status.
 
----
+## Contributing and license
 
-## Contributing
+See [CONTRIBUTING.md](CONTRIBUTING.md). Distributed under the [MIT License](LICENSE). Original project by [Sleekhost](https://github.com/sleekhost).
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
+## Manual daily schedule (Central Time)
 
-**Ideas:**
-- [ ] Linux support (xdotool)
-- [ ] Windows support (PowerShell)
-- [ ] Configurable intervals
-- [ ] Schedule mode (work hours only)
-- [ ] Native menu bar app
+Use `stay-active schedule-start` to manually start a **one-day session**. The default window is 8:00 AM–5:00 PM in `America/Chicago` (automatically CST/CDT). If started before 8:00 AM, the manually launched worker waits until the window opens. If started after 5:00 PM, nothing starts. At 5:00 PM, the worker **exits and cleans up its PID and lock files**; it does not remain alive overnight or restart the next day.
 
----
+```bash
+DAILY_START_TIME_CENTRAL=08:00 DAILY_STOP_TIME_CENTRAL=17:00 stay-active schedule-start
+stay-active status
+stay-active stop
+```
 
-## License
+The legacy `DAILY_END_TIME_CENTRAL` variable is supported as an alias if `DAILY_STOP_TIME_CENTRAL` is unset. Times must be in 24-hour HH:MM format, with start strictly before stop (same-day only). `stay-active start` is unchanged and runs without a schedule until explicitly stopped.
 
-[MIT](LICENSE) — Do whatever you want with it.
+No automatic startup is enabled by `schedule-start`. The existing optional `autostart-on` command remains a separate opt-in capability; do not enable it if you want every session to require manual invocation.
 
----
-
-<p align="center">
-  <strong>Made by <a href="https://github.com/sleekhost">Sleekhost</a></strong>
-</p>
-
-<p align="center">
-  <em>If this helped you, consider giving it a ⭐</em>
-</p>
+Schedule checks are performed once per second during idle periods, and after each synthetic input cycle, so the process terminates at the configured stop minute rather than sleeping into the evening. Mac sleep can delay execution until the system wakes.

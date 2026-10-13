@@ -1,0 +1,18 @@
+name: Bash regression tests
+on:
+  push:
+    branches: [main, fix/reliable-daemon-lifecycle]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  shell-tests:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: bash -n stay-active install.sh uninstall.sh tests/smoke.sh tests/integration.sh
+      - name: Regression tests (mocked input; no Teams connection)
+        run: bash tests/smoke.sh
