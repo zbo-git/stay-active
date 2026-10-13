@@ -144,8 +144,16 @@ expect_ok bash "$APP" start
 assert_has 'Started (PID' "$TMP/out"
 [[ -f "$STAY_ACTIVE_STATE_DIR/.stay_active_pid" ]] || fail 'start did not write PID'
 pass=$((pass+1))
-expect_fail bash "$APP" start
-assert_has 'Unverified or stale lock' "$TMP/err"
+original_pid=$(cat "$STAY_ACTIVE_STATE_DIR/.stay_active_pid")
+# Repeated start may return success (already running) or failure (stale mock PID).
+# Neither outcome may replace the original PID or launch a second worker.
+if bash "$APP" start >"$TMP/out" 2>"$TMP/err"; then
+  assert_has 'Already running' "$TMP/out"
+else
+  assert_has 'Unverified or stale lock' "$TMP/err"
+fi
+[[ "$(cat "$STAY_ACTIVE_STATE_DIR/.stay_active_pid")" = "$original_pid" ]] || fail 'repeated start replaced PID'
+pass=$((pass+1))
 expect_fail bash "$APP" toggle
 reset_state
 expect_ok bash "$APP" toggle
