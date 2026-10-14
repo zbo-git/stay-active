@@ -218,3 +218,8 @@ The legacy `DAILY_END_TIME_CENTRAL` variable is supported as an alias if `DAILY_
 No automatic startup is enabled by `schedule-start`. The existing optional `autostart-on` command remains a separate opt-in capability; do not enable it if you want every session to require manual invocation.
 
 Schedule checks are performed once per second during idle periods, and after each synthetic input cycle, so the process terminates at the configured stop minute rather than sleeping into the evening. Mac sleep can delay execution until the system wakes.
+
+
+## Activity logging
+
+Each successful simulated action produces a concise, diagnostic event in the local log. Keyboard-only mode records `Activity: Shift key pressed/released`; when `STAY_ACTIVE_MOUSE=1`, the log additionally records the original and destination cursor coordinates (for example, `Activity: mouse (500,400)->(503,398)`). Failed input commands are still reported as errors; successful mouse movement may be logged even if the subsequent keyboard action fails. The reminder that synthetic input does not guarantee application presence is documented above rather than repeated in each activity log line.
