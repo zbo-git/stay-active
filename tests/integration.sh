@@ -96,6 +96,9 @@ clock 07:59 09:00 09:00 17:00
 expect_ok env DAILY_START_TIME_CENTRAL=08:00 DAILY_STOP_TIME_CENTRAL=17:00 bash "$APP" __run-scheduled
 assert_has 'Scheduled end reached' "$STAY_ACTIVE_STATE_DIR/.stay_active_log"
 assert_has 'kd:shift ku:shift' "$CLICK_LOG"
+assert_has 'Activity: Shift key pressed/released' "$STAY_ACTIVE_STATE_DIR/.stay_active_log"
+if grep -q 'presence not verified' "$STAY_ACTIVE_STATE_DIR/.stay_active_log"; then fail 'repetitive presence disclaimer logged'; fi
+pass=$((pass+1))
 
 # Alias applies when primary stop variable absent.
 reset_state
@@ -137,6 +140,8 @@ clock 09:00 09:01
 expect_ok env STAY_ACTIVE_MOUSE=1 DAILY_STOP_TIME_CENTRAL=09:01 bash "$APP" __run-scheduled
 assert_has '^p$' "$CLICK_LOG"
 assert_has 'm:' "$CLICK_LOG"
+assert_has 'Activity: mouse (250,250)->(' "$STAY_ACTIVE_STATE_DIR/.stay_active_log"
+assert_has 'Activity: Shift key pressed/released' "$STAY_ACTIVE_STATE_DIR/.stay_active_log"
 
 # Command-level start/toggle and stale-lock safety without spawning a live daemon.
 reset_state

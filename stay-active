@@ -60,7 +60,7 @@ read_idle_seconds() {
 }
 
 simulate_activity() {
-    local position x y
+    local position x y destination
     if [[ "$MOUSE" = 1 ]]; then
         position=$(cliclick p 2>/dev/null) || return 1
         [[ "$position" =~ ^[0-9]+,[0-9]+$ ]] || return 1
@@ -68,10 +68,12 @@ simulate_activity() {
         x=$((x + RANDOM % 11 - 5)); y=$((y + RANDOM % 11 - 5))
         ((x >= 0)) || x=0
         ((y >= 0)) || y=0
-        cliclick -e 30 "m:$x,$y" >/dev/null 2>&1 || return 1
+        destination="$x,$y"
+        cliclick -e 30 "m:$destination" >/dev/null 2>&1 || return 1
+        log_msg "Activity: mouse ($position)->($destination)"
     fi
     cliclick kd:shift ku:shift >/dev/null 2>&1 || return 1
-    log_msg "Synthetic input sent (mouse=$MOUSE); application presence not verified"
+    log_msg "Activity: Shift key pressed/released"
 }
 
 central_hhmm() { TZ=America/Chicago date +%H:%M; }
